@@ -1,0 +1,164 @@
+name: Credential-free native Windows route audit
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  impactor:
+    runs-on: windows-2025
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate: [official, pr226, pr241]
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      RUST_LOG: info
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Fetch frozen source and existing IPA
+        run: |
+          New-Item -ItemType Directory -Force evidence,build | Out-Null
+          $r = Get-Content revisions.json | ConvertFrom-Json
+          $candidate = $r.'${{ matrix.candidate }}'
+          git init build/upstream
+          git -C build/upstream remote add origin "https://github.com/$($candidate.repo).git"
+          git -C build/upstream fetch --depth 1 origin $candidate.sha
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git -C build/upstream checkout --detach FETCH_HEAD
+          if ((git -C build/upstream rev-parse HEAD) -ne $candidate.sha) { throw 'Wrong source SHA' }
+          gh run download 38768892518 --repo zy6aa/signal-probe-tvos --name tvos-evidence-791a0f0cdecad591e762a31f78ed0d18bf4ceb4a --dir build/input
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $ipa = Resolve-Path build/input/SignalProbe-unsigned.ipa
+          if ((Get-FileHash $ipa -Algorithm SHA256).Hash.ToLower() -ne $r.ipa_sha256) { throw 'IPA hash mismatch' }
+          "PROBE_IPA=$ipa" >> $env:GITHUB_ENV
+          git -C build/upstream rev-parse HEAD > evidence/upstream-sha.txt
+          Copy-Item build/upstream/LICENSE evidence/UPSTREAM-LICENSE
+          Copy-Item build/upstream/Cargo.lock evidence/Cargo.lock
+          git -C build/upstream archive --format=zip --output=../../evidence/upstream-source.zip HEAD
+          Get-ComputerInfo -Property WindowsProductName,WindowsVersion,OsBuildNumber | Out-File evidence/windows.txt
+      - name: Prepare test-only probes and native compiler
+        run: |
+          python scripts/inject_probes.py build/upstream '${{ matrix.candidate }}'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          rustup update stable --no-self-update
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          rustup default stable
+          rustc -Vv | Tee-Object evidence/rustc.txt
+          cargo -V | Tee-Object evidence/cargo.txt
+          python -m pip install cryptography asn1crypto
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m pip freeze > evidence/python-lock.txt
+      - name: Build and run upstream library and route tests on native Windows
+        run: |
+          cargo test --locked --manifest-path build/upstream/Cargo.toml -p plume_core -p plume_utils --lib -- --test-threads=1 2>&1 | Tee-Object evidence/rust-tests.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build native CLI and independent package probe
+        run: |
+          cargo build --locked --manifest-path build/upstream/Cargo.toml -p plume_utils --example route_probe 2>&1 | Tee-Object evidence/build-probe.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo build --locked --manifest-path build/upstream/Cargo.toml -p plumesign 2>&1 | Tee-Object evidence/build-cli.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item build/upstream/target/debug/plumesign.exe evidence/plumesign-${{ matrix.candidate }}.exe
+          & build/upstream/target/debug/plumesign.exe --help 2>&1 | Tee-Object evidence/cli-help.txt
+          & build/upstream/target/debug/examples/route_probe.exe $env:PROBE_IPA "$PWD/evidence/package-roundtrip.ipa" 2>&1 | Tee-Object evidence/package-probe.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Exercise real IPA signing without Apple credentials
+        run: |
+          python scripts/signing_probe.py --exe build/upstream/target/debug/plumesign.exe --ipa $env:PROBE_IPA --output evidence --work build/signing
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build PR226 native GUI (network path is GUI-only)
+        if: ${{ matrix.candidate == 'pr226' && !cancelled() }}
+        run: |
+          cargo build --locked --manifest-path build/upstream/Cargo.toml -p plumeimpactor 2>&1 | Tee-Object evidence/build-gui.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item build/upstream/target/debug/plumeimpactor.exe evidence/Impactor-pr226.exe
+      - name: Record dependency licensing and binary signatures
+        if: always()
+        run: |
+          cargo metadata --locked --manifest-path build/upstream/Cargo.toml --format-version 1 > evidence/cargo-metadata.json
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem evidence -Filter *.exe | ForEach-Object {
+            Get-AuthenticodeSignature -LiteralPath $_.FullName | Select-Object Path,Status,StatusMessage
+            Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName
+          } | ConvertTo-Json -Depth 5 > evidence/binary-identities.json
+      - name: Upload credential-free research artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-${{ matrix.candidate }}-${{ github.sha }}
+          path: evidence/
+          retention-days: 7
+  pymobiledevice3:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Fetch pinned Python source and unchanged IPA
+        run: |
+          New-Item -ItemType Directory -Force evidence,build | Out-Null
+          $r = Get-Content revisions.json | ConvertFrom-Json
+          git init build/upstream
+          git -C build/upstream remote add origin https://github.com/doronz88/pymobiledevice3.git
+          git -C build/upstream fetch --depth 1 origin $r.pymobiledevice3.sha
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git -C build/upstream checkout --detach FETCH_HEAD
+          git -C build/upstream rev-parse HEAD > evidence/upstream-sha.txt
+          Copy-Item build/upstream/LICENSE evidence/UPSTREAM-LICENSE
+          git -C build/upstream archive --format=zip --output=../../evidence/upstream-source.zip HEAD
+          gh run download 38768892518 --repo zy6aa/signal-probe-tvos --name tvos-evidence-791a0f0cdecad591e762a31f78ed0d18bf4ceb4a --dir build/input
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ((Get-FileHash build/input/SignalProbe-unsigned.ipa -Algorithm SHA256).Hash.ToLower() -ne $r.ipa_sha256) { throw 'Wrong IPA' }
+          "PROBE_IPA=$((Resolve-Path build/input/SignalProbe-unsigned.ipa).Path)" >> $env:GITHUB_ENV
+      - name: Install only in disposable CI and freeze dependencies
+        run: |
+          python -m pip install ./build/upstream pytest pytest-asyncio pytest-timeout
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m pip check | Tee-Object evidence/pip-check.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m pip freeze > evidence/python-lock.txt
+          python -m pip inspect > evidence/python-inventory.json
+      - name: Test pairing, tunnel and service code without hardware
+        run: |
+          python -m pytest build/upstream/tests/test_userspace_tunnel.py build/upstream/tests/test_pair_record_paths.py build/upstream/tests/remote/test_pair_consent.py build/upstream/tests/remote/test_remote_pairing_connection_terminated.py build/upstream/tests/remote/test_bonjour_pair_record_matching.py build/upstream/tests/remote/test_remote_service_discovery.py --timeout=30 -q -ra --junitxml=evidence/upstream-tests.xml 2>&1 | Tee-Object evidence/upstream-tests.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Test native installation dispatch against fake device services
+        if: ${{ !cancelled() }}
+        run: |
+          python -m pytest scripts/test_pmd_route.py --timeout=30 -v --junitxml=evidence/route-tests.xml 2>&1 | Tee-Object evidence/route-tests.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m pymobiledevice3 remote pair --help > evidence/remote-pair-help.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m pymobiledevice3 apps install --help > evidence/install-help.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m pymobiledevice3 remote start-tunnel --help > evidence/tunnel-help.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build reproducible Python wheel set
+        if: ${{ !cancelled() }}
+        run: |
+          python -m pip wheel ./build/upstream --wheel-dir evidence/wheels
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem evidence/wheels -Filter *.whl | Get-FileHash -Algorithm SHA256 | ConvertTo-Json > evidence/wheel-sha256.json
+      - name: Upload Python Windows evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-pymobiledevice3-${{ github.sha }}
+          path: evidence/
+          retention-days: 7
