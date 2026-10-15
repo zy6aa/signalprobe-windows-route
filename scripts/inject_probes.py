@@ -7,6 +7,8 @@ root = Path(sys.argv[1])
 candidate = sys.argv[2]
 (root / "crates/plume_utils/examples").mkdir(exist_ok=True)
 shutil.copyfile(Path(__file__).with_name("route_probe.rs"), root / "crates/plume_utils/examples/route_probe.rs")
+if candidate == "fork226":
+    shutil.copyfile(Path(__file__).with_name("discovery_probe.rs"), root / "crates/plume_utils/examples/discovery_probe.rs")
 if candidate == "pr241":
     path = root / "crates/plume_utils/src/device.rs"
     with path.open("a", encoding="utf-8") as stream:

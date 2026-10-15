@@ -3,6 +3,7 @@
   "ipa_sha256": "1e4706cf4d2d8ca14b5d05d3b631857047726482687887096f75d23f8b9e8212",
   "official": {"repo": "claration/Impactor", "sha": "56358d37358009067bdfb2649c6af53460845b90", "release": "v2.7.0"},
   "pr226": {"repo": "0xroast/Impactor", "sha": "0d5d291dfe6ac131be1d3325d8c39f2e7cccb54e"},
+  "fork226": {"repo": "0xroast/Impactor", "sha": "489f17636c9c8cccb5df6af676f7f1f31a410340", "branch": "tvos-port"},
   "pr241": {"repo": "ZomkaDEV/Impactor", "sha": "f4b8d36191887076e7f42bb3b9bf8fcec7543ea1"},
   "pymobiledevice3": {"repo": "doronz88/pymobiledevice3", "sha": "29aadfe30c14e91148fd14f399ccbae1fa937149"}
 }

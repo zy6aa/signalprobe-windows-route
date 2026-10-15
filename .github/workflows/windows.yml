@@ -4,7 +4,7 @@ on:
     inputs:
       scope:
         type: choice
-        options: [all, python, rust]
+        options: [all, python, rust, fork-current]
         default: all
 permissions:
   contents: read
@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        candidate: [official, pr226, pr241]
+        candidate: ${{ fromJSON(inputs.scope == 'fork-current' && '["fork226"]' || '["official","pr226","pr241","fork226"]') }}
     env:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
@@ -85,11 +85,21 @@ jobs:
           python scripts/signing_probe.py --exe build/upstream/target/debug/plumesign.exe --ipa $env:PROBE_IPA --output evidence --work build/signing
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Build PR226 native GUI (network path is GUI-only)
-        if: ${{ matrix.candidate == 'pr226' && !cancelled() }}
+        if: ${{ (matrix.candidate == 'pr226' || matrix.candidate == 'fork226') && !cancelled() }}
         run: |
           cargo build --locked --manifest-path build/upstream/Cargo.toml -p plumeimpactor 2>&1 | Tee-Object evidence/build-gui.log
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Copy-Item build/upstream/target/debug/plumeimpactor.exe evidence/Impactor-pr226.exe
+      - name: Build and smoke-test current fork native discovery-only probe
+        if: ${{ matrix.candidate == 'fork226' && !cancelled() }}
+        run: |
+          cargo build --locked --manifest-path build/upstream/Cargo.toml -p plume_utils --example discovery_probe 2>&1 | Tee-Object evidence/discovery-build.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item build/upstream/target/debug/examples/discovery_probe.exe evidence/network-discover-native.exe
+          & evidence/network-discover-native.exe --help > evidence/discovery-help.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & evidence/network-discover-native.exe 1 > evidence/cloud-discovery.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Record dependency licensing and binary signatures
         if: always()
         run: |
@@ -107,7 +117,7 @@ jobs:
           path: evidence/
           retention-days: 7
   pymobiledevice3:
-    if: ${{ inputs.scope != 'rust' }}
+    if: ${{ inputs.scope != 'rust' && inputs.scope != 'fork-current' }}
     runs-on: windows-2025
     timeout-minutes: 30
     env:
