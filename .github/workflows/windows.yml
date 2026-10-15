@@ -1,11 +1,17 @@
 name: Credential-free native Windows route audit
 on:
   workflow_dispatch:
+    inputs:
+      scope:
+        type: choice
+        options: [all, python, rust]
+        default: all
 permissions:
   contents: read
   actions: read
 jobs:
   impactor:
+    if: ${{ inputs.scope != 'python' }}
     runs-on: windows-2025
     timeout-minutes: 50
     strategy:
@@ -17,6 +23,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
       RUST_LOG: info
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -100,8 +107,11 @@ jobs:
           path: evidence/
           retention-days: 7
   pymobiledevice3:
+    if: ${{ inputs.scope != 'rust' }}
     runs-on: windows-2025
     timeout-minutes: 30
+    env:
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -150,6 +160,9 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python -m pymobiledevice3 remote start-tunnel --help > evidence/tunnel-help.txt
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/network_probe.py --help > evidence/network-probe-help.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item scripts/network_probe.py evidence/network_probe.py
       - name: Build reproducible Python wheel set
         if: ${{ !cancelled() }}
         run: |
