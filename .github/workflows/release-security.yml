@@ -9,7 +9,6 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 20
     env:
-      GH_TOKEN: ${{ github.token }}
       RUST_LOG: info
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -18,7 +17,9 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.13'
-      - name: Verify and examine official v2.7.0 binary
+      - name: Download and verify official v2.7.0 binary and IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force evidence,build | Out-Null
           gh api repos/claration/Impactor/releases/tags/v2.7.0 > evidence/release-metadata.json
@@ -29,9 +30,13 @@ jobs:
           Invoke-WebRequest $asset.browser_download_url -OutFile evidence/plumesign-official-v2.7.0.exe
           if ((Get-FileHash evidence/plumesign-official-v2.7.0.exe -Algorithm SHA256).Hash.ToLower() -ne $asset.digest.Substring(7)) { throw 'Release binary hash mismatch' }
           Get-AuthenticodeSignature evidence/plumesign-official-v2.7.0.exe | Select-Object Status,StatusMessage,SignerCertificate | ConvertTo-Json -Depth 5 > evidence/authenticode.json
-          & evidence/plumesign-official-v2.7.0.exe --help > evidence/release-help.txt
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           gh run download 38768892518 --repo zy6aa/signal-probe-tvos --name tvos-evidence-791a0f0cdecad591e762a31f78ed0d18bf4ceb4a --dir build/input
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Execute official binary without credentials in its environment
+        run: |
+          if (Test-Path Env:GH_TOKEN) { throw 'Token must not be exposed to candidate binary' }
+          if (Test-Path Env:GITHUB_TOKEN) { throw 'Token must not be exposed to candidate binary' }
+          & evidence/plumesign-official-v2.7.0.exe --help > evidence/release-help.txt
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python -m pip install cryptography asn1crypto
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

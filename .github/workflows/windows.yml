@@ -17,7 +17,6 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
       RUST_LOG: info
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -26,6 +25,8 @@ jobs:
         with:
           python-version: '3.13'
       - name: Fetch frozen source and existing IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force evidence,build | Out-Null
           $r = Get-Content revisions.json | ConvertFrom-Json
@@ -101,8 +102,6 @@ jobs:
   pymobiledevice3:
     runs-on: windows-2025
     timeout-minutes: 30
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -111,6 +110,8 @@ jobs:
         with:
           python-version: '3.13'
       - name: Fetch pinned Python source and unchanged IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force evidence,build | Out-Null
           $r = Get-Content revisions.json | ConvertFrom-Json
