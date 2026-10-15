@@ -1,0 +1,66 @@
+name: Isolated native Windows pairing and provisioning components
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  components:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Fetch frozen components without signing-library substitution
+        run: |
+          New-Item -ItemType Directory -Force build,evidence | Out-Null
+          $r = Get-Content revisions.json | ConvertFrom-Json
+          foreach ($name in @('pr226','pr241')) {
+            git init "build/$name"
+            git -C "build/$name" remote add origin "https://github.com/$($r.$name.repo).git"
+            git -C "build/$name" fetch --depth 1 origin $r.$name.sha
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            git -C "build/$name" checkout --detach FETCH_HEAD
+            if ((git -C "build/$name" rev-parse HEAD) -ne $r.$name.sha) { throw 'Wrong source SHA' }
+            Copy-Item "build/$name/LICENSE" "evidence/LICENSE-$name"
+          }
+          python scripts/prepare_component.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item -Recurse build/component evidence/component-source
+      - name: Build and test actual pairing store, discovery and platform source
+        run: |
+          if (Test-Path Env:GH_TOKEN) { throw 'Candidate code must not receive GitHub credentials' }
+          rustup toolchain install 1.99.0 --profile minimal --no-self-update
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          rustc +1.99.0 -Vv > evidence/rustc.txt
+          cargo +1.99.0 generate-lockfile --manifest-path build/component/Cargo.toml
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item build/component/Cargo.lock evidence/component-source/Cargo.lock
+          cargo +1.99.0 test --locked --manifest-path build/component/Cargo.toml -- --test-threads=1 2>&1 | Tee-Object evidence/component-tests.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo +1.99.0 build --locked --manifest-path build/component/Cargo.toml 2>&1 | Tee-Object evidence/component-build.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item build/component/target/debug/network-component-probe.exe evidence/network-discover.exe
+          & evidence/network-discover.exe --help > evidence/discovery-help.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & evidence/network-discover.exe 1 > evidence/cloud-discovery.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-FileHash -Algorithm SHA256 evidence/network-discover.exe | ConvertTo-Json > evidence/discovery-sha256.json
+          Get-AuthenticodeSignature evidence/network-discover.exe | Select-Object Status,StatusMessage | ConvertTo-Json > evidence/discovery-authenticode.json
+          cargo +1.99.0 metadata --locked --manifest-path build/component/Cargo.toml --format-version 1 > evidence/component-metadata.json
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Upload component source, lock and discovery-only executable
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-network-components-${{ github.sha }}
+          path: evidence/
+          retention-days: 7
