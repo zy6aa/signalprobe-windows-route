@@ -1,0 +1,60 @@
+name: Official Windows release and dependency security evidence
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  release:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUST_LOG: info
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Verify and examine official v2.7.0 binary
+        run: |
+          New-Item -ItemType Directory -Force evidence,build | Out-Null
+          gh api repos/claration/Impactor/releases/tags/v2.7.0 > evidence/release-metadata.json
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $release = Get-Content evidence/release-metadata.json | ConvertFrom-Json
+          $asset = $release.assets | Where-Object name -eq 'plumesign-windows-x86_64.exe'
+          if ($asset.digest -ne 'sha256:ee41cd686cf214da7fcc46e08334dea7459857e661d0ea81f3575928036b3b13') { throw 'Official release digest changed' }
+          Invoke-WebRequest $asset.browser_download_url -OutFile evidence/plumesign-official-v2.7.0.exe
+          if ((Get-FileHash evidence/plumesign-official-v2.7.0.exe -Algorithm SHA256).Hash.ToLower() -ne $asset.digest.Substring(7)) { throw 'Release binary hash mismatch' }
+          Get-AuthenticodeSignature evidence/plumesign-official-v2.7.0.exe | Select-Object Status,StatusMessage,SignerCertificate | ConvertTo-Json -Depth 5 > evidence/authenticode.json
+          & evidence/plumesign-official-v2.7.0.exe --help > evidence/release-help.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          gh run download 38768892518 --repo zy6aa/signal-probe-tvos --name tvos-evidence-791a0f0cdecad591e762a31f78ed0d18bf4ceb4a --dir build/input
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m pip install cryptography asn1crypto
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/signing_probe.py --exe evidence/plumesign-official-v2.7.0.exe --ipa build/input/SignalProbe-unsigned.ipa --output evidence --work build/signing
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Query OSV for exact locked registry dependencies
+        if: ${{ !cancelled() }}
+        run: |
+          $r = Get-Content revisions.json | ConvertFrom-Json
+          foreach ($name in @('official','pr226','pr241')) {
+            git init "build/$name"
+            git -C "build/$name" remote add origin "https://github.com/$($r.$name.repo).git"
+            git -C "build/$name" fetch --depth 1 origin $r.$name.sha
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            git -C "build/$name" checkout --detach FETCH_HEAD
+            python scripts/security_inventory.py "build/$name/Cargo.lock" "evidence/osv-$name.json"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            Copy-Item "build/$name/LICENSE" "evidence/LICENSE-$name"
+          }
+      - name: Upload official release and security evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: official-release-security-${{ github.sha }}
+          path: evidence/
+          retention-days: 7
